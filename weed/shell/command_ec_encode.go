@@ -198,7 +198,7 @@ func getEcNodesMustDifferentRacks(allEcNodes []*EcNode) []*EcNode {
 			arr := make([]*EcNode, 0)
 			rackEcNodes[string(node.rack)] = arr
 		}
-		if len(rackEcNodes[string(node.rack)]) > averageShardsPerEcRack {
+		if len(rackEcNodes[string(node.rack)]) >= averageShardsPerEcRack {
 			continue
 		}
 		rackEcNodes[string(node.rack)] = append(rackEcNodes[string(node.rack)], node)
