@@ -107,9 +107,9 @@ func (c *commandEcEncode) Do(args []string, commandEnv *CommandEnv, writer io.Wr
 	if err != nil {
 		return err
 	}
-	fmt.Printf("ec encode volumes: %v, concurrent number:%d \n", volumeIds, concurrentNumber)
 	//A maximum of 3 volumes can be processed at one time
 	maxProcessNum := *concurrentNumber
+	fmt.Printf("ec encode volumes: %v, concurrent number:%d \n", volumeIds, maxProcessNum)
 	processVolumeIds := volumeIds
 	if len(volumeIds) > maxProcessNum {
 		processVolumeIds = volumeIds[0:maxProcessNum]
