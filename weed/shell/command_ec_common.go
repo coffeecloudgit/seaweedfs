@@ -188,6 +188,10 @@ type EcNode struct {
 	freeEcSlot int
 }
 
+func (ecNode *EcNode) String() string {
+	return fmt.Sprintf("dc:%s, rack:%s, freeEcSlot:%d, info id:%+v", ecNode.dc, ecNode.rack, ecNode.freeEcSlot, ecNode.info.Id)
+}
+
 func (ecNode *EcNode) localShardIdCount(vid uint32) int {
 	for _, diskInfo := range ecNode.info.DiskInfos {
 		for _, ecShardInfo := range diskInfo.EcShardInfos {

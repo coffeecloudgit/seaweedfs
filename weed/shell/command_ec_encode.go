@@ -188,6 +188,33 @@ func generateEcShards(grpcDialOption grpc.DialOption, volumeId needle.VolumeId, 
 
 }
 
+func getEcNodesMustDifferentRacks(allEcNodes []*EcNode) []*EcNode {
+	racks := collectRacks(allEcNodes)
+	// calculate average number of shards an ec rack should have for one volume
+	averageShardsPerEcRack := ceilDivide(erasure_coding.TotalShardsCount, len(racks))
+	var rackEcNodes = make(map[string][]*EcNode)
+	for _, node := range allEcNodes {
+		if _, b := rackEcNodes[string(node.rack)]; !b {
+			arr := make([]*EcNode, 0)
+			rackEcNodes[string(node.rack)] = arr
+		}
+		if len(rackEcNodes[string(node.rack)]) > averageShardsPerEcRack {
+			continue
+		}
+		rackEcNodes[string(node.rack)] = append(rackEcNodes[string(node.rack)], node)
+	}
+	rackNodesSlice := make([]*EcNode, 0)
+	for _, value := range rackEcNodes {
+		for _, node := range value {
+			rackNodesSlice = append(rackNodesSlice, node)
+		}
+	}
+
+	sortEcNodesByFreeslotsDescending(rackNodesSlice)
+
+	return rackNodesSlice
+}
+
 func spreadEcShards(commandEnv *CommandEnv, volumeId needle.VolumeId, collection string, existingLocations []wdclient.Location, parallelCopy bool) (err error) {
 
 	allEcNodes, totalFreeEcSlots, err := collectEcNodes(commandEnv, "")
@@ -198,7 +225,8 @@ func spreadEcShards(commandEnv *CommandEnv, volumeId needle.VolumeId, collection
 	if totalFreeEcSlots < erasure_coding.TotalShardsCount {
 		return fmt.Errorf("not enough free ec shard slots. only %d left", totalFreeEcSlots)
 	}
-	allocatedDataNodes := allEcNodes
+	//Ensure EcNodes come from different rack, Prevent uneven distribution
+	allocatedDataNodes := getEcNodesMustDifferentRacks(allEcNodes)
 	if len(allocatedDataNodes) > erasure_coding.TotalShardsCount {
 		allocatedDataNodes = allocatedDataNodes[:erasure_coding.TotalShardsCount]
 	}
@@ -239,7 +267,7 @@ func spreadEcShards(commandEnv *CommandEnv, volumeId needle.VolumeId, collection
 
 func parallelCopyEcShardsFromSource(grpcDialOption grpc.DialOption, targetServers []*EcNode, allocatedEcIds [][]uint32, volumeId needle.VolumeId, collection string, existingLocation wdclient.Location, parallelCopy bool) (actuallyCopied []uint32, err error) {
 
-	fmt.Printf("parallelCopyEcShardsFromSource %d %s\n", volumeId, existingLocation.Url)
+	fmt.Printf("parallelCopyEcShardsFromSource, %d %s, targetServers: %+v, allocatedEcIds: %v\n", volumeId, existingLocation.Url, targetServers, allocatedEcIds)
 
 	var wg sync.WaitGroup
 	shardIdChan := make(chan []uint32, len(targetServers))
