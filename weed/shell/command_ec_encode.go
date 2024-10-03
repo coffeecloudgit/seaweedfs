@@ -205,6 +205,9 @@ func chooseLocationForVolumes(commandEnv *CommandEnv, volumeIds []needle.VolumeI
 
 	for _, currentVolumeIds := range permuteResult {
 		volumeChooseLocationMap = make(map[needle.VolumeId]wdclient.Location)
+		for key,_ := range serversDisplayTimesInVolumes {
+			serversDisplayTimesInVolumes[key] = uint32(1)
+		}
 		for _, vid := range currentVolumeIds {
 			locations := volumeLocationsMap[needle.VolumeId(vid)]
 			if len(locations) == 0 {
