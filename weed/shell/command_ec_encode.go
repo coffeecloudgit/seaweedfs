@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -99,7 +100,7 @@ func (c *commandEcEncode) Do(args []string, commandEnv *CommandEnv, writer io.Wr
 
 	// volumeId is provided
 	if vid != 0 {
-		return doEcEncode(commandEnv, *collection, vid, *parallelCopy)
+		return doEcEncode(commandEnv, *collection, vid, []wdclient.Location{}, wdclient.Location{}, *parallelCopy)
 	}
 
 	// apply to all volumes in the collection
@@ -114,15 +115,20 @@ func (c *commandEcEncode) Do(args []string, commandEnv *CommandEnv, writer io.Wr
 	if len(volumeIds) > maxProcessNum {
 		processVolumeIds = volumeIds[0:maxProcessNum]
 	}
+	//load balancing for servers
+	volumeLocationsMap, volumeChooseLocationMap := chooseLocationForVolumes(commandEnv, processVolumeIds)
+
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var errors = make([]error, 0)
 	wg.Add(len(processVolumeIds))
 
 	for _, vid := range processVolumeIds {
+		locations := volumeLocationsMap[vid]
+		chooseLoc := volumeChooseLocationMap[vid]
 		go func() {
 			defer wg.Done()
-			if err = doEcEncode(commandEnv, *collection, vid, *parallelCopy); err != nil {
+			if err = doEcEncode(commandEnv, *collection, vid, locations, chooseLoc, *parallelCopy); err != nil {
 				mu.Lock()
 				errors = append(errors, err)
 				fmt.Printf("doEcEncode error:%v", err)
@@ -138,35 +144,97 @@ func (c *commandEcEncode) Do(args []string, commandEnv *CommandEnv, writer io.Wr
 	return nil
 }
 
-func doEcEncode(commandEnv *CommandEnv, collection string, vid needle.VolumeId, parallelCopy bool) (err error) {
+// server IP display times in volumes. if times is more, The lower the priority
+func chooseLocationForVolumes(commandEnv *CommandEnv, volumeIds []needle.VolumeId) (map[needle.VolumeId][]wdclient.Location, map[needle.VolumeId]wdclient.Location) {
+	var serversDisplayTimesInVolumes = make(map[string]uint32)
+	var volumeLocationsMap = make(map[needle.VolumeId][]wdclient.Location)
+	var volumeChooseLocationMap = make(map[needle.VolumeId]wdclient.Location)
+	for _, vid := range volumeIds {
+		locations, found := commandEnv.MasterClient.GetLocationsClone(uint32(vid))
+		if !found {
+			continue
+		}
+		volumeLocationsMap[vid] = locations
+		for _, loc := range locations {
+			serverIp := splitIP(loc.Url)
+			if len(serverIp) <= 0 {
+				fmt.Printf("loc url is err:%s", loc.Url)
+				continue
+			}
+			//init 1 times
+			serversDisplayTimesInVolumes[serverIp] = uint32(1)
+		}
+	}
+
+	for _, vid := range volumeIds {
+		locations := volumeLocationsMap[vid]
+		if len(locations) == 0 {
+			continue
+		}
+		var times = uint32(1000)
+		var chooseLoc = wdclient.Location{}
+		for _, loc := range locations {
+			serverIp := splitIP(loc.Url)
+			if len(serverIp) <= 0 {
+				fmt.Printf("loc url is err:%s", loc.Url)
+				continue
+			}
+			locTimes := serversDisplayTimesInVolumes[serverIp]
+			if locTimes < times {
+				times = locTimes
+				chooseLoc = loc
+			}
+		}
+		volumeChooseLocationMap[vid] = chooseLoc
+		//////
+		serverIp := splitIP(chooseLoc.Url)
+		var newTimes = uint32(0)
+		if v, b := serversDisplayTimesInVolumes[serverIp]; b {
+			newTimes = v
+		}
+		newTimes++
+		serversDisplayTimesInVolumes[serverIp] = newTimes
+
+	}
+	return volumeLocationsMap, volumeChooseLocationMap
+}
+
+func splitIP(url string) string {
+	parts := strings.Split(url, ":")
+	if len(parts) != 2 {
+		return ""
+	}
+	return parts[0]
+}
+
+func doEcEncode(commandEnv *CommandEnv, collection string, vid needle.VolumeId, locations []wdclient.Location, chooseLoc wdclient.Location, parallelCopy bool) (err error) {
 	if !commandEnv.isLocked() {
 		return fmt.Errorf("lock is lost")
 	}
-
-	// find volume location
-	locations, found := commandEnv.MasterClient.GetLocationsClone(uint32(vid))
-	if !found {
-		return fmt.Errorf("volume %d not found", vid)
+	if len(locations) == 0 {
+		var found = false
+		locations, found = commandEnv.MasterClient.GetLocationsClone(uint32(vid))
+		if !found {
+			return fmt.Errorf("volume %d not found", vid)
+		}
+		chooseLoc = locations[0]
 	}
-
-	// fmt.Printf("found ec %d shards on %v\n", vid, locations)
-
 	// mark the volume as readonly
 	err = markVolumeReplicasWritable(commandEnv.option.GrpcDialOption, vid, locations, false, false)
 	if err != nil {
-		return fmt.Errorf("mark volume %d as readonly on %s: %v", vid, locations[0].Url, err)
+		return fmt.Errorf("mark volume %d as readonly on %s: %v", vid, chooseLoc.Url, err)
 	}
 
 	// generate ec shards
-	err = generateEcShards(commandEnv.option.GrpcDialOption, vid, collection, locations[0].ServerAddress())
+	err = generateEcShards(commandEnv.option.GrpcDialOption, vid, collection, chooseLoc.ServerAddress())
 	if err != nil {
-		return fmt.Errorf("generate ec shards for volume %d on %s: %v", vid, locations[0].Url, err)
+		return fmt.Errorf("generate ec shards for volume %d on %s: %v", vid, chooseLoc.Url, err)
 	}
 
 	// balance the ec shards to current cluster
-	err = spreadEcShards(commandEnv, vid, collection, locations, parallelCopy)
+	err = spreadEcShards(commandEnv, vid, collection, locations, chooseLoc, parallelCopy)
 	if err != nil {
-		return fmt.Errorf("spread ec shards for volume %d from %s: %v", vid, locations[0].Url, err)
+		return fmt.Errorf("spread ec shards for volume %d from %s: %v", vid, chooseLoc.Url, err)
 	}
 
 	return nil
@@ -215,7 +283,7 @@ func getEcNodesMustDifferentRacks(allEcNodes []*EcNode) []*EcNode {
 	return rackNodesSlice
 }
 
-func spreadEcShards(commandEnv *CommandEnv, volumeId needle.VolumeId, collection string, existingLocations []wdclient.Location, parallelCopy bool) (err error) {
+func spreadEcShards(commandEnv *CommandEnv, volumeId needle.VolumeId, collection string, existingLocations []wdclient.Location, chooseLoc wdclient.Location, parallelCopy bool) (err error) {
 
 	allEcNodes, totalFreeEcSlots, err := collectEcNodes(commandEnv, "")
 	if err != nil {
@@ -235,21 +303,21 @@ func spreadEcShards(commandEnv *CommandEnv, volumeId needle.VolumeId, collection
 	allocatedEcIds := balancedEcDistribution(allocatedDataNodes)
 
 	// ask the data nodes to copy from the source volume server
-	copiedShardIds, err := parallelCopyEcShardsFromSource(commandEnv.option.GrpcDialOption, allocatedDataNodes, allocatedEcIds, volumeId, collection, existingLocations[0], parallelCopy)
+	copiedShardIds, err := parallelCopyEcShardsFromSource(commandEnv.option.GrpcDialOption, allocatedDataNodes, allocatedEcIds, volumeId, collection, chooseLoc, parallelCopy)
 	if err != nil {
 		return err
 	}
 
 	// unmount the to be deleted shards
-	err = unmountEcShards(commandEnv.option.GrpcDialOption, volumeId, existingLocations[0].ServerAddress(), copiedShardIds)
+	err = unmountEcShards(commandEnv.option.GrpcDialOption, volumeId, chooseLoc.ServerAddress(), copiedShardIds)
 	if err != nil {
 		return err
 	}
 
 	// ask the source volume server to clean up copied ec shards
-	err = sourceServerDeleteEcShards(commandEnv.option.GrpcDialOption, collection, volumeId, existingLocations[0].ServerAddress(), copiedShardIds)
+	err = sourceServerDeleteEcShards(commandEnv.option.GrpcDialOption, collection, volumeId, chooseLoc.ServerAddress(), copiedShardIds)
 	if err != nil {
-		return fmt.Errorf("source delete copied ecShards %s %d.%v: %v", existingLocations[0].Url, volumeId, copiedShardIds, err)
+		return fmt.Errorf("source delete copied ecShards %s %d.%v: %v", chooseLoc.Url, volumeId, copiedShardIds, err)
 	}
 
 	// ask the source volume server to delete the original volume
