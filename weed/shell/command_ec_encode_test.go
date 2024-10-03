@@ -6,6 +6,7 @@ import (
 	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
 	"github.com/seaweedfs/seaweedfs/weed/wdclient"
 	"golang.org/x/exp/maps"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -57,9 +58,9 @@ func Test_getServerDisplayTimesInVolumes(t *testing.T) {
 	commandEnv := CommandEnv{}
 	commandEnv.MasterClient = &wdclient.MasterClient{}
 
-	serversDisplayTimesInVolumes, volumeLocationsMap, volumeChooseLocationMap := getServerDisplayTimesInVolumesTest(&commandEnv, volumeIds)
+	volumeLocationsMap, volumeChooseLocationMap := getServerDisplayTimesInVolumesTest(&commandEnv, volumeIds)
 
-	fmt.Printf("serversDisplayTimesInVolumes: %v \n", serversDisplayTimesInVolumes)
+	//fmt.Printf("serversDisplayTimesInVolumes: %v \n", serversDisplayTimesInVolumes)
 	fmt.Printf("volumeLocationsMap: %v \n", volumeLocationsMap)
 	fmt.Printf("volumeChooseLocationMap: %v \n", volumeChooseLocationMap)
 
@@ -80,11 +81,13 @@ func Test_getServerDisplayTimesInVolumes(t *testing.T) {
 }
 
 // server IP display times in volumes. if times is more, The lower the priority
-func getServerDisplayTimesInVolumesTest(commandEnv *CommandEnv, volumeIds []needle.VolumeId) (map[string]uint32, map[needle.VolumeId][]wdclient.Location, map[needle.VolumeId]wdclient.Location) {
+func getServerDisplayTimesInVolumesTest(commandEnv *CommandEnv, volumeIds []needle.VolumeId) (map[needle.VolumeId][]wdclient.Location, map[needle.VolumeId]wdclient.Location) {
 	var serversDisplayTimesInVolumes = make(map[string]uint32)
 	var volumeLocationsMap = make(map[needle.VolumeId][]wdclient.Location)
 	var volumeChooseLocationMap = make(map[needle.VolumeId]wdclient.Location)
+	//1-192.168.3.74 = []
 	for _, vid := range volumeIds {
+		//locations, found := commandEnv.MasterClient.GetLocationsClone(uint32(vid))
 		locations, found := GetLocationsClone(vid)
 		if !found {
 			continue
@@ -100,36 +103,59 @@ func getServerDisplayTimesInVolumesTest(commandEnv *CommandEnv, volumeIds []need
 			serversDisplayTimesInVolumes[serverIp] = uint32(1)
 		}
 	}
-
+	var intVolumeIds = make([]int, 0)
 	for _, vid := range volumeIds {
-		locations := volumeLocationsMap[vid]
-		if len(locations) == 0 {
-			continue
-		}
-		var times = uint32(1000)
-		var chooseLoc = wdclient.Location{}
-		for _, loc := range locations {
-			serverIp := splitIP(loc.Url)
-			if len(serverIp) <= 0 {
-				fmt.Printf("loc url is err:%s", loc.Url)
+		intVolumeIds = append(intVolumeIds, int(vid))
+	}
+
+	sort.Ints(intVolumeIds)
+	//startIndex := rand.IntN(len(intVolumeIds) - 1)
+	var result [][]int
+	permute(intVolumeIds, len(intVolumeIds), &result)
+
+	for _, currentVolumeIds := range result {
+		volumeChooseLocationMap = make(map[needle.VolumeId]wdclient.Location)
+		for _, vid := range currentVolumeIds {
+			locations := volumeLocationsMap[needle.VolumeId(vid)]
+			if len(locations) == 0 {
 				continue
 			}
-			locTimes := serversDisplayTimesInVolumes[serverIp]
-			if locTimes < times {
-				times = locTimes
-				chooseLoc = loc
+			var times = uint32(1000)
+			var chooseLoc = wdclient.Location{}
+			for _, loc := range locations {
+				serverIp := splitIP(loc.Url)
+				if len(serverIp) <= 0 {
+					fmt.Printf("loc url is err:%s", loc.Url)
+					continue
+				}
+				locTimes := serversDisplayTimesInVolumes[serverIp]
+				if locTimes < times {
+					times = locTimes
+					chooseLoc = loc
+				}
 			}
+			volumeChooseLocationMap[needle.VolumeId(vid)] = chooseLoc
+			//////
+			serverIp := splitIP(chooseLoc.Url)
+			var newTimes = uint32(0)
+			if v, b := serversDisplayTimesInVolumes[serverIp]; b {
+				newTimes = v
+			}
+			newTimes++
+			serversDisplayTimesInVolumes[serverIp] = newTimes
 		}
-		volumeChooseLocationMap[vid] = chooseLoc
-		//////
-		serverIp := splitIP(chooseLoc.Url)
-		var newTimes = uint32(0)
-		if v, b := serversDisplayTimesInVolumes[serverIp]; b {
-			newTimes = v
-		}
-		newTimes++
-		serversDisplayTimesInVolumes[serverIp] = newTimes
 
+		if checkFillFullServers(volumeChooseLocationMap, len(serversDisplayTimesInVolumes)) {
+			break
+		}
 	}
-	return serversDisplayTimesInVolumes, volumeLocationsMap, volumeChooseLocationMap
+	return volumeLocationsMap, volumeChooseLocationMap
+}
+
+func TestGetCombinations(t *testing.T) {
+	var result [][]int
+	arr := []int{222, 223, 224, 225, 226, 227}
+	permute(arr, len(arr), &result)
+
+	fmt.Printf("result:%v \n", result)
 }

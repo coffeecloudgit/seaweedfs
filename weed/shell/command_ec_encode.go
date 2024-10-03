@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -144,11 +145,38 @@ func (c *commandEcEncode) Do(args []string, commandEnv *CommandEnv, writer io.Wr
 	return nil
 }
 
+// 递归函数用于获取数组的排列组合
+func permute(arr []int, n int, result *[][]int) {
+
+	if n == 1 {
+		// 输出单个元素的情况
+		//fmt.Println(arr)
+		temp := make([]int, len(arr))
+		copy(temp, arr)
+		*result = append(*result, temp)
+		return
+	} else {
+		// 对于每个元素，交换并递归
+		for i := 0; i < n; i++ {
+			permute(arr, n-1, result)
+			if n%2 == 1 {
+				// 对于奇数位置交换
+				arr[0], arr[n-1] = arr[n-1], arr[0]
+			} else {
+				// 对于偶数位置交换
+				arr[i], arr[n-1] = arr[n-1], arr[i]
+			}
+		}
+	}
+	return
+}
+
 // server IP display times in volumes. if times is more, The lower the priority
 func chooseLocationForVolumes(commandEnv *CommandEnv, volumeIds []needle.VolumeId) (map[needle.VolumeId][]wdclient.Location, map[needle.VolumeId]wdclient.Location) {
 	var serversDisplayTimesInVolumes = make(map[string]uint32)
 	var volumeLocationsMap = make(map[needle.VolumeId][]wdclient.Location)
 	var volumeChooseLocationMap = make(map[needle.VolumeId]wdclient.Location)
+	//1-192.168.3.74 = []
 	for _, vid := range volumeIds {
 		locations, found := commandEnv.MasterClient.GetLocationsClone(uint32(vid))
 		if !found {
@@ -165,38 +193,63 @@ func chooseLocationForVolumes(commandEnv *CommandEnv, volumeIds []needle.VolumeI
 			serversDisplayTimesInVolumes[serverIp] = uint32(1)
 		}
 	}
-
+	var intVolumeIds = make([]int, 0)
 	for _, vid := range volumeIds {
-		locations := volumeLocationsMap[vid]
-		if len(locations) == 0 {
-			continue
-		}
-		var times = uint32(1000)
-		var chooseLoc = wdclient.Location{}
-		for _, loc := range locations {
-			serverIp := splitIP(loc.Url)
-			if len(serverIp) <= 0 {
-				fmt.Printf("loc url is err:%s", loc.Url)
+		intVolumeIds = append(intVolumeIds, int(vid))
+	}
+
+	sort.Ints(intVolumeIds)
+	//startIndex := rand.IntN(len(intVolumeIds) - 1)
+	var permuteResult [][]int
+	permute(intVolumeIds, len(intVolumeIds), &permuteResult)
+
+	for _, currentVolumeIds := range permuteResult {
+		volumeChooseLocationMap = make(map[needle.VolumeId]wdclient.Location)
+		for _, vid := range currentVolumeIds {
+			locations := volumeLocationsMap[needle.VolumeId(vid)]
+			if len(locations) == 0 {
 				continue
 			}
-			locTimes := serversDisplayTimesInVolumes[serverIp]
-			if locTimes < times {
-				times = locTimes
-				chooseLoc = loc
+			var times = uint32(1000)
+			var chooseLoc = wdclient.Location{}
+			for _, loc := range locations {
+				serverIp := splitIP(loc.Url)
+				if len(serverIp) <= 0 {
+					fmt.Printf("loc url is err:%s", loc.Url)
+					continue
+				}
+				locTimes := serversDisplayTimesInVolumes[serverIp]
+				if locTimes < times {
+					times = locTimes
+					chooseLoc = loc
+				}
 			}
+			volumeChooseLocationMap[needle.VolumeId(vid)] = chooseLoc
+			//////
+			serverIp := splitIP(chooseLoc.Url)
+			var newTimes = uint32(0)
+			if v, b := serversDisplayTimesInVolumes[serverIp]; b {
+				newTimes = v
+			}
+			newTimes++
+			serversDisplayTimesInVolumes[serverIp] = newTimes
 		}
-		volumeChooseLocationMap[vid] = chooseLoc
-		//////
-		serverIp := splitIP(chooseLoc.Url)
-		var newTimes = uint32(0)
-		if v, b := serversDisplayTimesInVolumes[serverIp]; b {
-			newTimes = v
-		}
-		newTimes++
-		serversDisplayTimesInVolumes[serverIp] = newTimes
 
+		if checkFillFullServers(volumeChooseLocationMap, len(serversDisplayTimesInVolumes)) {
+			break
+		}
 	}
 	return volumeLocationsMap, volumeChooseLocationMap
+}
+
+func checkFillFullServers(mapLocation map[needle.VolumeId]wdclient.Location, serverLength int) bool {
+	var servers = make(map[string]uint32)
+	for _, loc := range mapLocation {
+		serverIp := splitIP(loc.Url)
+		servers[serverIp] = uint32(1)
+	}
+
+	return len(servers) == serverLength
 }
 
 func splitIP(url string) string {
