@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"golang.org/x/exp/maps"
 	"io"
 	"path/filepath"
 	"strings"
@@ -260,6 +261,7 @@ func (s *Store) CollectHeartbeat() *master_pb.Heartbeat {
 		var deleteVids []needle.VolumeId
 		maxVolumeCounts[string(location.DiskType)] += uint32(location.MaxVolumeCount)
 		location.volumesLock.RLock()
+		fmt.Printf("store location, directory:%s, volumes:%v \n", location.Directory, maps.Keys(location.volumes))
 		for _, v := range location.volumes {
 			curMaxFileKey, volumeMessage := v.ToVolumeInformationMessage()
 			if volumeMessage == nil {
@@ -348,6 +350,7 @@ func (s *Store) CollectHeartbeat() *master_pb.Heartbeat {
 	}
 
 	for col, size := range collectionVolumeSize {
+		fmt.Printf("collectionVolumeSize collection:%s, size:%v \n", col, float64(size))
 		stats.VolumeServerDiskSizeGauge.WithLabelValues(col, "normal").Set(float64(size))
 	}
 
@@ -559,8 +562,11 @@ func (s *Store) DeleteVolume(i needle.VolumeId, onlyEmpty bool) error {
 		Ttl:              v.Ttl.ToUint32(),
 		DiskType:         string(v.location.DiskType),
 	}
+
 	for _, location := range s.Locations {
+		fmt.Printf("before delete, directory:%s, voluems:%v \n", location.Directory, location.volumes)
 		err := location.DeleteVolume(i, onlyEmpty)
+		fmt.Printf("after delete, directory:%s, voluems:%v \n", location.Directory, location.volumes)
 		if err == nil {
 			glog.V(0).Infof("DeleteVolume %d", i)
 			s.DeletedVolumesChan <- message
