@@ -123,7 +123,7 @@ func (s *Store) DeleteCollection(collection string) (e error) {
 	for _, location := range s.Locations {
 		e = location.DeleteCollectionFromDiskLocation(collection)
 		if e != nil {
-			return
+			returndeleteExpiredEcVolumes
 		}
 		stats.DeleteCollectionMetrics(collection)
 		// let the heartbeat send the list of volumes, instead of sending the deleted volume ids to DeletedVolumesChan
@@ -381,6 +381,7 @@ func (s *Store) CollectHeartbeat() *master_pb.Heartbeat {
 
 func (s *Store) deleteExpiredEcVolumes() (ecShards, deleted []*master_pb.VolumeEcShardInformationMessage) {
 	for _, location := range s.Locations {
+		location.ecVolumesLock.RLock()
 		for _, ev := range location.ecVolumes {
 			messages := ev.ToVolumeEcShardInformationMessage()
 			if ev.IsTimeToDestroy() {
@@ -395,6 +396,7 @@ func (s *Store) deleteExpiredEcVolumes() (ecShards, deleted []*master_pb.VolumeE
 				ecShards = append(ecShards, messages...)
 			}
 		}
+		location.ecVolumesLock.RUnlock()
 	}
 	return
 }
